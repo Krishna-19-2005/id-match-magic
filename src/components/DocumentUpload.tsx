@@ -24,133 +24,194 @@ export const DocumentUpload = ({ onDocumentProcessed }: DocumentUploadProps) => 
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string>("");
 
+  const cleanOCRText = (text: string): string => {
+    return text
+      // Remove extra whitespace and normalize
+      .replace(/\s+/g, ' ')
+      // Remove common OCR artifacts
+      .replace(/[|]/g, 'I')
+      .replace(/[0O]/g, '0')
+      // Clean up line breaks
+      .replace(/\n\s*\n/g, '\n')
+      .trim();
+  };
+
   const extractDataFromText = (text: string): ExtractedData => {
+    const cleanedText = cleanOCRText(text);
     const data: ExtractedData = {};
-    const lines = text.split('\n').map(line => line.trim()).filter(line => line);
+    const lines = cleanedText.split('\n').map(line => line.trim()).filter(line => line.length > 2);
     
-    // Enhanced patterns for better matching
+    console.log('Cleaned OCR text:', cleanedText);
+    console.log('Lines:', lines);
+    
+    // Skip common header/footer text that shouldn't be names
+    const skipNames = [
+      'government of india',
+      'unique identification authority',
+      'aadhaar',
+      'aadhar',
+      'identity card',
+      'permanent account number',
+      'pan card',
+      'driving license',
+      'voter id'
+    ];
+    
+    // Aadhaar-specific patterns for Indian documents
     const patterns = {
-      // Name patterns - look for common ID document formats
+      // Aadhaar number - exactly 12 digits, often with spaces
+      aadhaarNumber: [
+        /\b(\d{4}\s?\d{4}\s?\d{4})\b/g,
+        /\b(\d{12})\b/g
+      ],
+      
+      // Name patterns - avoid official headers
       name: [
-        /(?:name|given name|full name|surname|first name)[\s:]*([a-zA-Z\s]+)/i,
-        /^([A-Z][a-z]+ [A-Z][a-z]+(?:\s[A-Z][a-z]+)?)/,
-        /(?:MR|MS|MRS|DR)[\s.]([A-Z][a-z]+\s[A-Z][a-z]+)/i,
+        // Look for lines with proper case names (not all caps headers)
+        /^([A-Z][a-z]+(?:\s[A-Z][a-z]+){1,3})$/,
+        // Names after specific keywords in Indian documents
+        /(?:name|naam)[\s:]+([A-Z][a-z]+(?:\s[A-Z][a-z]+){1,3})/i,
+        // Names in middle of text (not headers)
+        /\b([A-Z][a-z]+\s[A-Z][a-z]+(?:\s[A-Z][a-z]+)?)\b/
       ],
       
-      // Date patterns - various formats
+      // DOB patterns for Indian format
       dateOfBirth: [
-        /(?:dob|date of birth|born)[\s:]*([\d]{1,2}[\/\-\.]([\d]{1,2})[\/\-\.]([\d]{2,4}))/i,
-        /(?:dob|date of birth|born)[\s:]*([\d]{2,4}[\/\-\.]([\d]{1,2})[\/\-\.]([\d]{1,2}))/i,
-        /([\d]{1,2}[\/\-\.]([\d]{1,2})[\/\-\.]([\d]{4}))/,
-        /([\d]{4}[\/\-\.]([\d]{1,2})[\/\-\.]([\d]{1,2}))/,
+        // DD/MM/YYYY format (most common in India)
+        /\b(\d{1,2}\/\d{1,2}\/\d{4})\b/g,
+        // DD-MM-YYYY format
+        /\b(\d{1,2}-\d{1,2}-\d{4})\b/g,
+        // With DOB prefix
+        /(?:dob|date of birth|born)[\s:]*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4})/i,
+        // Just year patterns for fallback
+        /\b(19\d{2}|20\d{2})\b/g
       ],
       
-      // ID number patterns
-      idNumber: [
-        /(?:id|identification|license|passport)[\s#:]*([A-Z0-9]{6,})/i,
-        /(?:number|no|#)[\s:]*([\d]{8,})/i,
-        /([A-Z]{1,2}[\d]{6,})/,
-        /([\d]{9,})/,
-      ],
-      
-      // Phone patterns
+      // Phone patterns for Indian numbers
       phoneNumber: [
-        /(?:phone|mobile|tel|contact)[\s:]*(\+?[\d\s\-\(\)]{10,})/i,
-        /(\+?[\d]{1,3}[\s\-]?[\d]{3}[\s\-]?[\d]{3}[\s\-]?[\d]{4})/,
-        /(\([\d]{3}\)[\s\-]?[\d]{3}[\s\-]?[\d]{4})/,
-        /([\d]{10,})/,
+        // Indian mobile numbers (10 digits starting with 6-9)
+        /\b([6-9]\d{9})\b/g,
+        // With +91 country code
+        /\+91[\s\-]?([6-9]\d{9})/g,
+        // With spaces or dashes
+        /\b([6-9]\d{4}[\s\-]?\d{5})\b/g,
+        // General 10-digit pattern
+        /\b(\d{10})\b/g
       ]
     };
 
-    // Process each line and try to extract information
+    // First, try to find Aadhaar number specifically
+    for (const pattern of patterns.aadhaarNumber) {
+      const matches = cleanedText.matchAll(pattern);
+      for (const match of matches) {
+        if (match[1]) {
+          const aadhaar = match[1].replace(/\s/g, '');
+          if (aadhaar.length === 12 && /^\d{12}$/.test(aadhaar)) {
+            data.idNumber = aadhaar;
+            break;
+          }
+        }
+      }
+      if (data.idNumber) break;
+    }
+
+    // Extract phone number
+    for (const pattern of patterns.phoneNumber) {
+      const matches = cleanedText.matchAll(pattern);
+      for (const match of matches) {
+        if (match[1]) {
+          const phone = match[1].replace(/[\s\-]/g, '');
+          if (phone.length === 10 && /^[6-9]\d{9}$/.test(phone)) {
+            data.phoneNumber = phone;
+            break;
+          }
+        }
+      }
+      if (data.phoneNumber) break;
+    }
+
+    // Extract date of birth
+    for (const pattern of patterns.dateOfBirth) {
+      const matches = cleanedText.matchAll(pattern);
+      for (const match of matches) {
+        if (match[1]) {
+          const dateStr = match[1];
+          // Validate date format
+          if (dateStr.includes('/') || dateStr.includes('-')) {
+            const parts = dateStr.split(/[\/\-]/);
+            if (parts.length === 3) {
+              const year = parseInt(parts[2]);
+              if (year >= 1900 && year <= 2010) { // Reasonable birth year range
+                data.dateOfBirth = dateStr;
+                break;
+              }
+            }
+          } else if (dateStr.length === 4) {
+            // Just year
+            const year = parseInt(dateStr);
+            if (year >= 1900 && year <= 2010) {
+              data.dateOfBirth = dateStr;
+              break;
+            }
+          }
+        }
+      }
+      if (data.dateOfBirth) break;
+    }
+
+    // Extract name - be more careful to avoid headers
     for (const line of lines) {
-      // Skip very short lines
-      if (line.length < 3) continue;
+      if (data.name) break;
       
-      // Try name extraction
-      if (!data.name) {
-        for (const pattern of patterns.name) {
-          const match = line.match(pattern);
-          if (match && match[1]) {
-            const nameCandidate = match[1].trim();
-            // Validate name (letters and spaces only, reasonable length)
-            if (nameCandidate.length >= 3 && nameCandidate.length <= 50 && 
-                /^[a-zA-Z\s]+$/.test(nameCandidate)) {
+      // Skip lines that are likely headers/official text
+      const lowerLine = line.toLowerCase();
+      const isHeader = skipNames.some(skip => lowerLine.includes(skip));
+      if (isHeader) continue;
+      
+      // Skip lines with numbers (likely not names)
+      if (/\d/.test(line)) continue;
+      
+      // Skip very short or very long lines
+      if (line.length < 4 || line.length > 40) continue;
+      
+      // Look for proper case names
+      for (const pattern of patterns.name) {
+        const match = line.match(pattern);
+        if (match && match[1]) {
+          const nameCandidate = match[1].trim();
+          // Additional validation
+          if (nameCandidate.length >= 4 && nameCandidate.length <= 35 && 
+              /^[A-Z][a-z]+(?:\s[A-Z][a-z]+){1,3}$/.test(nameCandidate)) {
+            // Make sure it's not a common header phrase
+            const lowerName = nameCandidate.toLowerCase();
+            const isValidName = !skipNames.some(skip => lowerName.includes(skip));
+            if (isValidName) {
               data.name = nameCandidate;
               break;
             }
           }
         }
       }
-      
-      // Try date extraction
-      if (!data.dateOfBirth) {
-        for (const pattern of patterns.dateOfBirth) {
-          const match = line.match(pattern);
-          if (match && match[1]) {
-            data.dateOfBirth = match[1].trim();
+    }
+
+    // If we didn't find a name in individual lines, try the full text more carefully
+    if (!data.name) {
+      const fullText = cleanedText.replace(/\n/g, ' ');
+      // Look for 2-3 word combinations that look like names
+      const nameMatches = fullText.match(/\b([A-Z][a-z]{2,}\s[A-Z][a-z]{2,}(?:\s[A-Z][a-z]{2,})?)\b/g);
+      if (nameMatches) {
+        for (const nameMatch of nameMatches) {
+          const lowerName = nameMatch.toLowerCase();
+          const isValidName = !skipNames.some(skip => lowerName.includes(skip));
+          if (isValidName && nameMatch.length >= 4 && nameMatch.length <= 35) {
+            data.name = nameMatch;
             break;
           }
         }
       }
-      
-      // Try ID number extraction
-      if (!data.idNumber) {
-        for (const pattern of patterns.idNumber) {
-          const match = line.match(pattern);
-          if (match && match[1]) {
-            const idCandidate = match[1].trim();
-            if (idCandidate.length >= 6 && idCandidate.length <= 20) {
-              data.idNumber = idCandidate;
-              break;
-            }
-          }
-        }
-      }
-      
-      // Try phone extraction
-      if (!data.phoneNumber) {
-        for (const pattern of patterns.phoneNumber) {
-          const match = line.match(pattern);
-          if (match && match[1]) {
-            const phoneCandidate = match[1].trim();
-            const digitsOnly = phoneCandidate.replace(/\D/g, '');
-            if (digitsOnly.length >= 10 && digitsOnly.length <= 15) {
-              data.phoneNumber = phoneCandidate;
-              break;
-            }
-          }
-        }
-      }
     }
 
-    // Additional fallback patterns for common formats
-    const fullText = text.replace(/\n/g, ' ');
-    
-    // Look for consecutive words that might be names
-    if (!data.name) {
-      const nameMatch = fullText.match(/\b([A-Z][a-z]+\s[A-Z][a-z]+(?:\s[A-Z][a-z]+)?)\b/);
-      if (nameMatch && nameMatch[1] && nameMatch[1].length <= 50) {
-        data.name = nameMatch[1];
-      }
-    }
-    
-    // Look for dates in various formats
-    if (!data.dateOfBirth) {
-      const dateMatches = [
-        fullText.match(/([\d]{1,2}\/[\d]{1,2}\/[\d]{4})/),
-        fullText.match(/([\d]{1,2}-[\d]{1,2}-[\d]{4})/),
-        fullText.match(/([\d]{4}-[\d]{1,2}-[\d]{1,2})/),
-      ];
-      
-      for (const match of dateMatches) {
-        if (match && match[1]) {
-          data.dateOfBirth = match[1];
-          break;
-        }
-      }
-    }
-
+    console.log('Final extracted data:', data);
     return data;
   };
 
