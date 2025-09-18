@@ -65,7 +65,7 @@ export const DocumentUpload = ({ onDocumentProcessed }: DocumentUploadProps) => 
         /\b(\d{12})\b/g
       ],
       
-      // Name patterns - avoid official headers
+      // Name patterns - avoid official headers (using match, not matchAll)
       name: [
         // Look for lines with proper case names (not all caps headers)
         /^([A-Z][a-z]+(?:\s[A-Z][a-z]+){1,3})$/,
@@ -81,7 +81,7 @@ export const DocumentUpload = ({ onDocumentProcessed }: DocumentUploadProps) => 
         /\b(\d{1,2}\/\d{1,2}\/\d{4})\b/g,
         // DD-MM-YYYY format
         /\b(\d{1,2}-\d{1,2}-\d{4})\b/g,
-        // With DOB prefix
+        // With DOB prefix (using match, not matchAll)
         /(?:dob|date of birth|born)[\s:]*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4})/i,
         // Just year patterns for fallback
         /\b(19\d{2}|20\d{2})\b/g
@@ -102,8 +102,9 @@ export const DocumentUpload = ({ onDocumentProcessed }: DocumentUploadProps) => 
 
     // First, try to find Aadhaar number specifically
     for (const pattern of patterns.aadhaarNumber) {
-      const matches = cleanedText.matchAll(pattern);
-      for (const match of matches) {
+      let match;
+      const regex = new RegExp(pattern.source, pattern.flags);
+      while ((match = regex.exec(cleanedText)) !== null) {
         if (match[1]) {
           const aadhaar = match[1].replace(/\s/g, '');
           if (aadhaar.length === 12 && /^\d{12}$/.test(aadhaar)) {
@@ -111,14 +112,16 @@ export const DocumentUpload = ({ onDocumentProcessed }: DocumentUploadProps) => 
             break;
           }
         }
+        if (!pattern.global) break;
       }
       if (data.idNumber) break;
     }
 
     // Extract phone number
     for (const pattern of patterns.phoneNumber) {
-      const matches = cleanedText.matchAll(pattern);
-      for (const match of matches) {
+      let match;
+      const regex = new RegExp(pattern.source, pattern.flags);
+      while ((match = regex.exec(cleanedText)) !== null) {
         if (match[1]) {
           const phone = match[1].replace(/[\s\-]/g, '');
           if (phone.length === 10 && /^[6-9]\d{9}$/.test(phone)) {
@@ -126,15 +129,42 @@ export const DocumentUpload = ({ onDocumentProcessed }: DocumentUploadProps) => 
             break;
           }
         }
+        if (!pattern.global) break;
       }
       if (data.phoneNumber) break;
     }
 
     // Extract date of birth
     for (const pattern of patterns.dateOfBirth) {
-      const matches = cleanedText.matchAll(pattern);
-      for (const match of matches) {
-        if (match[1]) {
+      if (pattern.global) {
+        let match;
+        const regex = new RegExp(pattern.source, pattern.flags);
+        while ((match = regex.exec(cleanedText)) !== null) {
+          if (match[1]) {
+            const dateStr = match[1];
+            // Validate date format
+            if (dateStr.includes('/') || dateStr.includes('-')) {
+              const parts = dateStr.split(/[\/\-]/);
+              if (parts.length === 3) {
+                const year = parseInt(parts[2]);
+                if (year >= 1900 && year <= 2010) { // Reasonable birth year range
+                  data.dateOfBirth = dateStr;
+                  break;
+                }
+              }
+            } else if (dateStr.length === 4) {
+              // Just year
+              const year = parseInt(dateStr);
+              if (year >= 1900 && year <= 2010) {
+                data.dateOfBirth = dateStr;
+                break;
+              }
+            }
+          }
+        }
+      } else {
+        const match = cleanedText.match(pattern);
+        if (match && match[1]) {
           const dateStr = match[1];
           // Validate date format
           if (dateStr.includes('/') || dateStr.includes('-')) {
@@ -145,13 +175,6 @@ export const DocumentUpload = ({ onDocumentProcessed }: DocumentUploadProps) => 
                 data.dateOfBirth = dateStr;
                 break;
               }
-            }
-          } else if (dateStr.length === 4) {
-            // Just year
-            const year = parseInt(dateStr);
-            if (year >= 1900 && year <= 2010) {
-              data.dateOfBirth = dateStr;
-              break;
             }
           }
         }
